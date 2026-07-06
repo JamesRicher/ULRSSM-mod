@@ -1,44 +1,17 @@
-import argparse
-import glob
 import os
 import numpy as np
+from argparse import ArgumentParser
+from glob import glob
+from tqdm import tqdm
+
 import torch
 
 from networks.diffusion_network import DiffusionNet
 from utils.shape_util import read_shape
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description='Extract per-vertex DiffusionNet features for a dataset under ../data.'
-    )
-    parser.add_argument('--dataset', default='FAUST_r',
-                        help='Dataset name (folder under --data_root). May include a subset, '
-                             'e.g. "SHREC16/cuts".')
-    parser.add_argument('--data_root',
-                        default=os.path.join(
-                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data'),
-                        help='Root directory containing the dataset folders '
-                             '(default: ../data relative to this script).')
-    parser.add_argument('--checkpoint', default=None,
-                        help='Path to network checkpoint. If omitted, inferred from --dataset.')
-    parser.add_argument('--mesh_subdir', default='off',
-                        help='Subdirectory containing mesh files (default: off).')
-    parser.add_argument('--mesh_ext', default='off',
-                        help='Mesh file extension to load (off or obj). Default: off.')
-    parser.add_argument('--output_subdir', default='feats',
-                        help='Subdirectory (under the dataset folder) to write features into.')
-    parser.add_argument('--input_type', default='wks', choices=['wks', 'xyz'],
-                        help='DiffusionNet input feature type.')
-    parser.add_argument('--out_channels', type=int, default=256,
-                        help='Number of output feature channels.')
-    parser.add_argument('--no_normalize', action='store_true',
-                        help='Skip L2-normalization of per-vertex features.')
-    return parser.parse_args()
-
-
 def infer_checkpoint(dataset):
-    """Best-effort mapping from dataset folder to default checkpoint."""
+    """Best-effort mapping from dataset folder name to default checkpoint."""
     key = dataset.lower().rstrip('/').replace('\\', '/')
     mapping = {
         'faust_r': 'faust.pth',
@@ -62,32 +35,42 @@ def infer_checkpoint(dataset):
     return os.path.join('checkpoints', f'{os.path.basename(key)}.pth')
 
 
-def main():
-    args = parse_args()
+if __name__ == '__main__':
+    # parse arguments
+    parser = ArgumentParser('Extract per-vertex DiffusionNet features from .off files')
+    parser.add_argument('--data_root', required=True, help='data root contains /off sub-folder.')
+    parser.add_argument('--checkpoint', default=None,
+                        help='network checkpoint. If omitted, inferred from the data_root folder name.')
+    parser.add_argument('--input_type', default='wks', choices=['wks', 'xyz'],
+                        help='DiffusionNet input feature type.')
+    parser.add_argument('--out_channels', type=int, default=256,
+                        help='number of output feature channels.')
+    parser.add_argument('--no_normalize', action='store_true',
+                        help='no L2-normalization of per-vertex features.')
+    args = parser.parse_args()
 
-    dataset_dir = os.path.join(args.data_root, args.dataset)
-    mesh_dir = os.path.join(dataset_dir, args.mesh_subdir)
-    output_dir = os.path.join(dataset_dir, args.output_subdir)
-    checkpoint = args.checkpoint or infer_checkpoint(args.dataset)
+    # sanity check
+    data_root = args.data_root
+    out_channels = args.out_channels
+    no_normalize = args.no_normalize
+    assert out_channels > 0, f'Invalid out_channels: {out_channels}'
+    assert os.path.isdir(data_root), f'Invalid data root: {data_root}'
 
-    if not os.path.isdir(mesh_dir):
-        raise FileNotFoundError(f'Mesh directory not found: {mesh_dir}')
-    if not os.path.isfile(checkpoint):
-        raise FileNotFoundError(f'Checkpoint not found: {checkpoint}')
+    checkpoint = args.checkpoint or infer_checkpoint(os.path.basename(os.path.normpath(data_root)))
+    assert os.path.isfile(checkpoint), f'Checkpoint not found: {checkpoint}'
+
+    feats_dir = os.path.join(data_root, 'feats')
+    os.makedirs(feats_dir, exist_ok=True)
 
     in_channels = 128 if args.input_type == 'wks' else 3
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    os.makedirs(output_dir, exist_ok=True)
 
-    print(f'Dataset:    {args.dataset}')
-    print(f'Mesh dir:   {mesh_dir}')
-    print(f'Output dir: {output_dir}')
-    print(f'Checkpoint: {checkpoint}')
-
+    # load feature extractor
     feature_extractor = DiffusionNet(
         in_channels=in_channels,
-        out_channels=args.out_channels,
+        out_channels=out_channels,
         input_type=args.input_type,
+        cache_dir=os.path.join(data_root, 'diffusion'),
     ).to(device)
     feature_extractor.load_state_dict(
         torch.load(checkpoint, map_location=device)['networks']['feature_extractor'],
@@ -95,28 +78,23 @@ def main():
     )
     feature_extractor.eval()
 
-    mesh_files = sorted(glob.glob(os.path.join(mesh_dir, f'*.{args.mesh_ext}')))
-    print(f'Found {len(mesh_files)} *.{args.mesh_ext} meshes in {mesh_dir}')
+    # read .off files
+    off_files = sorted(glob(os.path.join(data_root, 'off', '*.off')))
+    assert len(off_files) != 0
 
-    for i, path in enumerate(mesh_files):
-        name = os.path.splitext(os.path.basename(path))[0]
-        out_path = os.path.join(output_dir, f'{name}.npy')
+    for off_file in tqdm(off_files):
+        verts, faces = read_shape(off_file)
+        filename = os.path.basename(off_file)
 
-        vert_np, face_np = read_shape(path)
-        vert = torch.from_numpy(vert_np).to(device=device, dtype=torch.float32)
-        face = torch.from_numpy(face_np).to(device=device, dtype=torch.long)
+        vert = torch.from_numpy(verts).to(device=device, dtype=torch.float32)
+        face = torch.from_numpy(faces).to(device=device, dtype=torch.long)
 
         with torch.no_grad():
             feat = feature_extractor(vert.unsqueeze(0), face.unsqueeze(0))
         feat = feat.squeeze(0).cpu().numpy().astype(np.float32)
-        if not args.no_normalize:
+
+        if not no_normalize:
             feat = feat / (np.linalg.norm(feat, axis=-1, keepdims=True) + 1e-12)
 
-        np.save(out_path, feat)
-        print(f'[{i + 1}/{len(mesh_files)}] {name}: features {feat.shape} -> {out_path}')
-
-    print(f'Done. Features saved to {output_dir}/')
-
-
-if __name__ == '__main__':
-    main()
+        # save results
+        np.save(os.path.join(feats_dir, filename.replace('.off', '.npy')), feat)
