@@ -73,10 +73,11 @@ def update_network(loss_metrics, feature_extractor, optimizer):
 
 
 if __name__ == '__main__':
-    # read shape pair
-    filename1 = '/data/caodongliang/FAUST_r/off/tr_reg_080.off'
-    filename2 = '/data/caodongliang/FAUST_r/off/tr_reg_081.off'
+    # define the files we are looking at
+    filename1 = '/Users/james/Documents/Imperial/ShapeMatching/Code/data/FAUST_r/off/tr_reg_080.off'
+    filename2 = '/Users/james/Documents/Imperial/ShapeMatching/Code/data/FAUST_r/off/tr_reg_081.off'
 
+    # read meshes  as numpy arrays
     vert_np_x, face_np_x = read_shape(filename1)
     vert_np_y, face_np_y = read_shape(filename2)
 
@@ -96,7 +97,10 @@ if __name__ == '__main__':
     input_type = 'wks'  # 'xyz'
     in_channels = 128 if input_type == 'wks' else 3  # 'xyz'
     feature_extractor = DiffusionNet(in_channels=in_channels, out_channels=256, input_type=input_type).to(device)
-    feature_extractor.load_state_dict(torch.load(network_path)['networks']['feature_extractor'], strict=True)
+    feature_extractor.load_state_dict(
+        torch.load(network_path, map_location=device)['networks']['feature_extractor'],
+        strict=True
+    )
     feature_extractor.eval()
     permutation = Similarity(tau=0.07, hard=True).to(device)
 

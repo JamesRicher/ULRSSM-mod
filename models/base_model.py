@@ -65,7 +65,7 @@ class BaseModel:
         # load pretrained models
         load_path = self.opt['path'].get('resume_state')
         if load_path and os.path.isfile(load_path):
-            state_dict = torch.load(load_path)
+            state_dict = torch.load(load_path, map_location=lambda storage, loc: storage)
             if self.opt['path'].get('resume', True):  # resume training
                 self.resume_model(state_dict, net_only=False)
             else:  # only resume model for validation

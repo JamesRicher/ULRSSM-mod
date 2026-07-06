@@ -168,4 +168,5 @@ def train_pipeline(root_path):
 
 if __name__ == '__main__':
     root_path = osp.abspath(osp.join(__file__, osp.pardir))
+    print(root_path) # root path is just the path of current file (not including the file name)
     train_pipeline(root_path)
