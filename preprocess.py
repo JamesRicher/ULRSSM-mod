@@ -38,13 +38,18 @@ if __name__ == '__main__':
         dist_dir = os.path.join(data_root, 'dist')
         os.makedirs(dist_dir, exist_ok=True)
 
-    # read .off files
-    off_files = sorted(glob(os.path.join(data_root, 'off', '*.off')))
+    # read .off files: flat (FAUST/SCAPE/SMAL: off/*.off) or one level of category
+    # subdirs (DT4D_r: off/<category>/<frame>.off)
+    off_dir = os.path.join(data_root, 'off')
+    off_files = sorted(glob(os.path.join(off_dir, '*.off')) +
+                       glob(os.path.join(off_dir, '*', '*.off')))
     assert len(off_files) != 0
 
     for off_file in tqdm(off_files):
         verts, faces = read_shape(off_file)
-        filename = os.path.basename(off_file)
+        # keep the category subdir in the output path: frame basenames repeat across
+        # DT4D categories, so a flat dist/ would silently overwrite between categories
+        filename = os.path.relpath(off_file, off_dir)
 
         if not no_normalize:
             # center shape
@@ -66,5 +71,7 @@ if __name__ == '__main__':
         if not no_dist:
             # compute distance matrix
             dist_mat = compute_geodesic_distmat(verts, faces)
-            # save results
-            sio.savemat(os.path.join(dist_dir, filename.replace('.off', '.mat')), {'dist': dist_mat})
+            # save results, mirroring any off/ subdirectory (e.g. dist/<category>/<frame>.mat)
+            dist_file = os.path.join(dist_dir, filename.replace('.off', '.mat'))
+            os.makedirs(os.path.dirname(dist_file), exist_ok=True)
+            sio.savemat(dist_file, {'dist': dist_mat})
