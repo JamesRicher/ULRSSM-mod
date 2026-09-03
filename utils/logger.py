@@ -3,6 +3,8 @@ import datetime
 import logging
 import time
 
+import torch
+
 from .dist_util import get_dist_info, master_only
 
 # initialized logger
@@ -33,15 +35,30 @@ class AvgTimer:
         self.total_time = 0.
         self.avg_time = 0.
         self.count = 0
+        # every recorded interval, for the runtime benchmark. get_avg_time() is a WINDOWED mean
+        # (total_time/count reset every `window` records), so it cannot give a mean/sd over the
+        # whole test set; this keeps the raw per-pair times instead.
+        self.times = []
         self.start()
 
+    @staticmethod
+    def _sync():
+        """Wait for queued CUDA work before reading the clock. Kernels are async, so without
+        this the interval ends early and the missing time is charged to whatever synchronises
+        next -- i.e. outside the timed region entirely."""
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     def start(self):
+        self._sync()
         self.start_time = time.time()
 
     def record(self):
+        self._sync()
         self.count += 1
         # calculate current time
         self.current_time = time.time() - self.start_time
+        self.times.append(self.current_time)
         # calculate total time
         self.total_time += self.current_time
         # calculate average time

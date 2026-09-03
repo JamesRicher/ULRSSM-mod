@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import shutil
 import numpy as np
@@ -127,6 +128,35 @@ class BaseModel:
         """
         return [optimizer.param_groups[0]['lr'] for optimizer in self.optimizers.values()]
 
+    def _dump_runtime(self, timer, logger, warmup=5):
+        """Write the per-pair inference times to runtime_ulrssm.{npz,json} for the runtime table.
+
+        The timed region is whatever validate_single wraps (refinement + feature extractor +
+        functional map + p2p), i.e. method work on in-memory tensors -- no data loading, no
+        geodesic metric. AvgTimer syncs CUDA at both ends, so the intervals are real GPU time.
+        The first `warmup` pairs are dropped: they carry CUDA context creation and cudnn
+        autotuning. Mean/sd plus median/IQR, since per-pair cost scales with mesh size.
+        """
+        times = np.asarray(getattr(timer, 'times', []), dtype=float)
+        if times.size == 0:
+            return
+        kept = times[warmup:] if times.size > warmup else times
+        ms = kept * 1e3
+        q1, q3 = np.percentile(ms, [25, 75])
+        summary = {'n_pairs': int(ms.size), 'warmup_dropped': int(times.size - kept.size),
+                   'mean_ms': float(ms.mean()),
+                   'sd_ms': float(ms.std(ddof=1)) if ms.size > 1 else 0.0,
+                   'median_ms': float(np.median(ms)), 'iqr_ms': float(q3 - q1),
+                   'min_ms': float(ms.min()), 'max_ms': float(ms.max()),
+                   'with_refine': getattr(self, 'with_refine', None)}
+        out_dir = self.opt['path'].get('results_root') or self.opt['path']['log']
+        os.makedirs(out_dir, exist_ok=True)
+        np.savez(os.path.join(out_dir, 'runtime_ulrssm.npz'), times=kept, all_times=times)
+        with open(os.path.join(out_dir, 'runtime_ulrssm.json'), 'w') as f:
+            json.dump(summary, f, indent=2)
+        logger.info(f"Runtime/pair: {summary['mean_ms']:.1f} +/- {summary['sd_ms']:.1f} ms "
+                    f"(median {summary['median_ms']:.1f}, n={summary['n_pairs']}) -> {out_dir}")
+
     @torch.no_grad()
     def validation(self, dataloader, tb_logger, update=True):
         """Validation function.
@@ -199,6 +229,7 @@ class BaseModel:
 
         logger = get_root_logger()
         logger.info(f'Avg time: {timer.get_avg_time():.4f}')
+        self._dump_runtime(timer, logger)
 
         if len(geo_errors) != 0:
             geo_errors = np.concatenate(geo_errors)
